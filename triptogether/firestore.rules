@@ -1,0 +1,105 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isUser(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isGroupMember(groupId) {
+      return isAuthenticated() && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid));
+    }
+    
+    function isGroupAdmin(groupId) {
+      return isAuthenticated() && (
+        get(/databases/$(database)/documents/groups/$(groupId)).data.createdBy == request.auth.uid ||
+        get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role == 'admin'
+      );
+    }
+    
+    // User profile: readable by authenticated users, editable only by self
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isUser(userId);
+    }
+    
+    // Public invitation lookup (only allows read of invite metadata, NOT group contents)
+    match /invitations/{inviteCode} {
+      allow read: if true;
+      allow create, update, delete: if isAuthenticated();
+    }
+    
+    // Groups collection
+    match /groups/{groupId} {
+      // Group details readable by members or creator
+      allow read: if isAuthenticated() && (
+        resource == null ||
+        resource.data.createdBy == request.auth.uid ||
+        isGroupMember(groupId)
+      );
+      allow create: if isAuthenticated();
+      allow update, delete: if isGroupAdmin(groupId);
+      
+      // Members subcollection
+      match /members/{memberId} {
+        // Members list readable by members
+        allow read: if isAuthenticated();
+        // Joining group (creating own membership) or admin managing members
+        allow create: if isAuthenticated() && (request.auth.uid == memberId || isGroupAdmin(groupId));
+        allow update, delete: if isAuthenticated() && (request.auth.uid == memberId || isGroupAdmin(groupId));
+      }
+      
+      // Availability subcollection
+      match /availability/{date} {
+        allow read: if isGroupMember(groupId);
+        allow write: if isGroupMember(groupId);
+      }
+      
+      // Destination polls
+      match /polls/{pollId} {
+        allow read: if isGroupMember(groupId);
+        allow create: if isGroupMember(groupId);
+        allow update, delete: if isGroupAdmin(groupId) || resource.data.createdBy == request.auth.uid;
+        
+        // Votes subcollection
+        match /votes/{userId} {
+          allow read: if isGroupMember(groupId);
+          allow write: if isGroupMember(groupId) && request.auth.uid == userId;
+        }
+        
+        // Comments subcollection
+        match /comments/{commentId} {
+          allow read: if isGroupMember(groupId);
+          allow create: if isGroupMember(groupId) && request.auth.uid == request.resource.data.userId;
+          allow update, delete: if isAuthenticated() && (request.auth.uid == resource.data.userId || isGroupAdmin(groupId));
+        }
+      }
+      
+      // Itinerary Days
+      match /itineraryDays/{dayId} {
+        allow read: if isGroupMember(groupId);
+        allow write: if isGroupAdmin(groupId);
+      }
+      
+      // Suggestions & Itinerary activities
+      match /suggestions/{suggestionId} {
+        allow read: if isGroupMember(groupId);
+        allow create: if isGroupMember(groupId);
+        allow update: if isGroupMember(groupId);
+        allow delete: if isGroupAdmin(groupId) || resource.data.authorId == request.auth.uid;
+        
+        // Comments on suggestions
+        match /comments/{commentId} {
+          allow read: if isGroupMember(groupId);
+          allow create: if isGroupMember(groupId);
+          allow update, delete: if isAuthenticated() && (request.auth.uid == resource.data.userId || isGroupAdmin(groupId));
+        }
+      }
+    }
+  }
+}
